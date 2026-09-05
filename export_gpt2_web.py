@@ -118,7 +118,7 @@ for i, blk in enumerate(model.transformer.h):
     blk.mlp.register_forward_hook(mk(i))
 ln_f, W_U = model.transformer.ln_f, model.lm_head
 
-def lens(v): return torch.softmax(W_U(ln_f(v)), dim=-1)
+def lens(v, normed=False): return torch.softmax(W_U(v if normed else ln_f(v)), dim=-1)
 def dec(i): return tok.decode([i]) if tok is not None else f"<{i}>"
 def topk(pr):
     v, idx = pr.topk(args.topk)
@@ -142,7 +142,7 @@ with torch.no_grad():
             hs = o.hidden_states  # [emb, blk0, ..., blk11] pre-ln_f
             layers = []
             for L in range(cfg.n_layer):
-                rp = lens(hs[L+1][0,pos]); mp = lens(mlp_out[L][0,pos])
+                rp = lens(hs[L+1][0,pos], normed=(L==cfg.n_layer-1)); mp = lens(mlp_out[L][0,pos])
                 layers.append({"resid": topk(rp), "mlp": topk(mp),
                                "p_chosen": round(float(rp[cid]),5),
                                "resid_H": H(rp), "mlp_H": H(mp)})

@@ -149,6 +149,16 @@ svg{display:block;width:100%;height:auto;overflow:visible}
 .note code{font-family:"IBM Plex Mono",monospace;font-size:11.5px;background:var(--panel2);
   padding:1px 4px;border-radius:2px;border:1px solid var(--line2)}
 
+/* ---- live input ---- */
+.live{margin:20px 0 0;padding:16px 18px;background:var(--panel);border:1px solid var(--line);border-radius:4px;box-shadow:var(--shadow)}
+.live-row{display:flex;gap:10px;margin-top:8px}
+.live-row input{flex:1;min-width:0;font-family:"IBM Plex Mono",monospace;font-size:14px;padding:10px 12px;border:1px solid var(--line);border-radius:3px;background:var(--panel2);color:var(--ink)}
+.live-foot{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:10px;flex-wrap:wrap}
+.live-note{font-size:12px;color:var(--muted)}
+.prog{display:flex;align-items:center;gap:9px}
+.prog-bar{width:160px;height:6px;background:var(--line2);border-radius:3px;overflow:hidden}
+.prog-bar i{display:block;height:100%;width:0;background:var(--resid-fill);transition:width .25s}
+#progTxt{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
 details{margin-top:22px;background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:0}
 summary{cursor:pointer;padding:13px 16px;font-size:13px;font-weight:500}
 details[open] summary{border-bottom:1px solid var(--line)}
@@ -170,6 +180,19 @@ footer{margin-top:34px;padding-top:16px;border-top:1px solid var(--line);
     </div>
   </header>
 
+  <section class="live">
+    <label class="lbl" for="prompt">Type a prompt — GPT-2 runs live in your browser</label>
+    <div class="live-row">
+      <input id="prompt" type="text" value="The capital of Japan is" spellcheck="false" autocomplete="off">
+      <button class="pri" id="run">Run</button>
+    </div>
+    <div class="live-foot">
+      <span class="live-note">Real GPT-2 small, computed on your device · one-time ~248&nbsp;MB download, then cached</span>
+      <div class="prog" id="prog" hidden><span class="prog-bar"><i id="progFill"></i></span><span id="progTxt"></span></div>
+    </div>
+  </section>
+
+  <div class="lbl" style="margin-top:20px">Or replay a precomputed example</div>
   <div class="chips" id="chips" role="group" aria-label="Prompt"></div>
 
   <div class="deck">
@@ -227,13 +250,11 @@ footer{margin-top:34px;padding-top:16px;border-top:1px solid var(--line);
   </div>
 
   <details>
-    <summary>Play your own prompt</summary>
+    <summary>How this works</summary>
     <div class="dbody">
-      <p class="note" style="margin:0 0 10px">GPT-2 can't run in this page — the sandbox blocks model weight downloads. Generate a trace with the exporter, then paste the JSON here.</p>
-      <p class="note mono" style="margin:0 0 10px;font-size:11.5px">python export_lens_json.py --out lens.json --prompts "your prompt here"</p>
-      <textarea id="ta" placeholder="Paste lens.json contents…" spellcheck="false"></textarea>
-      <div style="margin-top:9px"><button id="load">Load trace</button></div>
-      <div class="msg" id="msg"></div>
+      <p class="note" style="margin:0 0 10px">When you press <b>Run</b>, GPT-2 small (124M parameters, fp16) downloads once and then runs entirely on your device in a background thread. Each layer's vector is projected through the model's own final <code>LayerNorm</code> and unembedding to read out what it "predicts", with no server round-trip.</p>
+      <p class="note" style="margin:0 0 10px">The per-layer <b>MLP write</b> column is why this is a from-scratch forward pass rather than an off-the-shelf runtime: no packaged GPT-2 exposes each layer's MLP output on its own. The output is verified token-for-token against a PyTorch reference before shipping.</p>
+      <p class="note" style="margin:0">Compute for five tokens takes a few seconds on a laptop. Layer 11's residual read-out equals the model's actual output, which is the built-in check that the projection is correct.</p>
     </div>
   </details>
 
@@ -406,20 +427,39 @@ $("rows").addEventListener("click", function(e){
 });
 $("play").addEventListener("click", play);
 $("speed").addEventListener("change", function(e){ S.speed = +e.target.value; });
-$("load").addEventListener("click", function(){
-  var m = $("msg");
-  try {
-    var d = JSON.parse($("ta").value);
-    if (!d.prompts || !d.prompts.length || !d.n_layers) throw new Error("no prompts array");
-    DATA = d; S.p=0; S.s=0; S.L=DATA.n_layers-1;
-    buildChips(); buildSteps(); render();
-    m.style.color = "var(--mlp)";
-    m.textContent = "Loaded " + d.prompts.length + " prompt(s), " + d.n_layers + " layers.";
-  } catch(err){
-    m.style.color = "#C2453B";
-    m.textContent = "Couldn't read that: " + err.message + ". Paste the full contents of lens.json.";
+/* ---------- live mode: run GPT-2 in a worker ---------- */
+var worker=null, busy=false;
+function setProg(pct,txt){ $("prog").hidden=false; $("progFill").style.width=(Math.max(0,Math.min(1,pct))*100).toFixed(1)+"%"; $("progTxt").textContent=txt; }
+function runLive(){
+  if(busy) return;
+  var prompt=$("prompt").value.trim(); if(!prompt) return;
+  busy=true; stop(); $("run").disabled=true; $("run").textContent="Running…"; setProg(0,"starting");
+  if(!worker){
+    worker=new Worker("worker.js");
+    worker.onmessage=function(e){
+      var m=e.data;
+      if(m.type==="progress"){
+        var pc=Math.round(m.pct*100);
+        var label = m.phase==="download" ? "downloading model "+pc+"%"
+                  : m.phase==="init"     ? "preparing weights"
+                  :                        "computing "+pc+"%";
+        setProg(m.pct,label);
+      } else if(m.type==="done"){
+        DATA.prompts.push(m.data.prompts[0]);
+        S.p=DATA.prompts.length-1; S.s=0; S.L=nL()-1;
+        buildChips(); buildSteps(); render();
+        busy=false; $("run").disabled=false; $("run").textContent="Run"; $("prog").hidden=true;
+        play();                       // auto slow-mo replay of the fresh result
+      } else if(m.type==="error"){
+        busy=false; $("run").disabled=false; $("run").textContent="Run";
+        setProg(0,"error — "+m.message);
+      }
+    };
   }
-});
+  worker.postMessage({type:"gen", prompt:prompt, newTokens:5, topk: DATA.topk||8});
+}
+$("run").addEventListener("click", runLive);
+$("prompt").addEventListener("keydown", function(e){ if(e.key==="Enter"){ e.preventDefault(); runLive(); } });
 
 /* open fully revealed on the first token, so the page reads at rest */
 S.L = nL()-1;
