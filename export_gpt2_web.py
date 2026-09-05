@@ -5,15 +5,15 @@ reference trace to verify a JS re-implementation against.
 
 Produces, under --out:
   manifest.json        tensor table, config, shard list
-  weights_000.bin ...  int8 weight data + fp32 per-row scales, sharded <45MB
+  weights_000.bin ...  fp16 weight data (2D) / fp32 (1D), sharded <45MB
   tokenizer.json       {vocab: token->id, merges: [...]}
   reference.json       per-prompt greedy trace (token ids + per-layer top-k),
                        computed with the SAME lens convention the browser uses
                        (ln_f applied uniformly to every layer's residual)
 
 Weight layout in the logical byte stream, per tensor at its manifest offset:
-  quant 2D [r,c]:  int8[r*c]  then  float32 scale[r]   (row-symmetric)
-  plain   :        float32[prod(shape)]
+  fp16 2D:  uint16[prod(shape)]   (IEEE half; decoded to fp32 in the browser)
+  fp32 1D:  float32[prod(shape)]  (LayerNorm + biases stay full precision)
 JS fetches every shard, concatenates to one ArrayBuffer, slices by offset.
 """
 import argparse, json, os, math
@@ -55,26 +55,19 @@ def want(name):
         return not name.endswith(".attn.bias") and not name.endswith(".attn.masked_bias")
     return False
 
-def quantize_row(w):  # w: [r,c] float32 -> int8 q [r,c], fp32 scale [r]
-    m = np.max(np.abs(w), axis=1)
-    scale = np.where(m > 0, m / 127.0, 1.0).astype(np.float32)
-    q = np.round(w / scale[:, None]).clip(-127, 127).astype(np.int8)
-    return q, scale
-
 for name, t in sd.items():
     if not want(name):
         continue
     arr = t.detach().cpu().numpy().astype(np.float32)
-    quant = arr.ndim == 2
+    half = arr.ndim == 2                       # 2D weights -> fp16; 1D -> fp32
     off = len(buf)
-    if quant:
-        q, scale = quantize_row(arr)
-        buf += q.tobytes()
-        buf += scale.tobytes()
+    if half:
+        buf += arr.astype(np.float16).tobytes()
     else:
         buf += arr.astype(np.float32).tobytes()
     tensors.append({"name": name, "shape": list(arr.shape),
-                    "quant": bool(quant), "offset": off, "length": len(buf) - off})
+                    "dtype": "fp16" if half else "fp32",
+                    "offset": off, "length": len(buf) - off})
 
 # ---- shard --------------------------------------------------------------
 shards = []
