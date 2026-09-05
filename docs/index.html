@@ -149,6 +149,17 @@ svg{display:block;width:100%;height:auto;overflow:visible}
 .note code{font-family:"IBM Plex Mono",monospace;font-size:11.5px;background:var(--panel2);
   padding:1px 4px;border-radius:2px;border:1px solid var(--line2)}
 
+/* ---- explainer ---- */
+.explainer{margin:20px 0 0;padding:16px 18px;background:var(--panel);border:1px solid var(--line);border-radius:4px;box-shadow:var(--shadow)}
+.explainer p.intro{margin:9px 0 0;font-size:13.5px;color:var(--ink2);line-height:1.55;max-width:68ch}
+.explainer p.intro b{color:var(--ink)}
+.explainer figure{margin:16px 0 0}
+.explainer svg{display:block;width:100%;max-width:700px;height:auto;margin:0 auto;color:var(--ink)}
+.explainer figcaption{font-size:12px;color:var(--muted);margin:10px auto 0;max-width:64ch;line-height:1.5;text-align:center}
+.exp-keys{display:flex;gap:16px;flex-wrap:wrap;margin-top:14px}
+.exp-key{flex:1;min-width:180px;font-size:12.5px;color:var(--ink2);line-height:1.5}
+.exp-key b{color:var(--ink)}
+.exp-key .sw{display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:baseline;margin-right:5px}
 /* ---- live input ---- */
 .live{margin:20px 0 0;padding:16px 18px;background:var(--panel);border:1px solid var(--line);border-radius:4px;box-shadow:var(--shadow)}
 .live-row{display:flex;gap:10px;margin-top:8px}
@@ -179,6 +190,65 @@ footer{margin-top:34px;padding-top:16px;border-top:1px solid var(--line);
       <b><span class="dot m"></span>MLP write — this layer's own contribution</b>
     </div>
   </header>
+
+  <section class="explainer">
+    <div class="lbl">How one layer works</div>
+    <p class="intro">The weights are <b>fixed</b> — training set them once, and running the model never changes them. What changes is the <b>residual stream</b>: a running vector that enters as a plain word and gets edited, layer by layer, into a next-word prediction.</p>
+    <figure>
+      <svg viewBox="0 0 720 352" role="img" aria-label="The residual stream runs left to right, entering as the word France and leaving as a prediction. One layer reads the stream and adds two edits back to it: an attention step that gathers from earlier words, and an MLP step that recalls associations. The same fixed layer repeats twelve times.">
+        <defs>
+          <marker id="ahI" markerWidth="8" markerHeight="8" refX="5.5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="currentColor"/></marker>
+          <marker id="ahM" markerWidth="8" markerHeight="8" refX="5.5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="var(--mlp-fill)"/></marker>
+          <marker id="ahR" markerWidth="9" markerHeight="9" refX="6" refY="3.2" orient="auto"><path d="M0,0 L6.5,3.2 L0,6.4 Z" fill="var(--resid-fill)"/></marker>
+        </defs>
+
+        <!-- residual stream rail -->
+        <line x1="70" y1="180" x2="676" y2="180" stroke="var(--resid-fill)" stroke-width="6" marker-end="url(#ahR)"/>
+        <rect x="14" y="165" width="50" height="30" rx="5" fill="var(--panel2)" stroke="var(--resid)" stroke-width="1.5"/>
+        <text x="39" y="184" text-anchor="middle" font-size="11" font-weight="600" fill="var(--ink)">France</text>
+        <text x="39" y="212" text-anchor="middle" font-size="10" fill="var(--muted)">word embedding</text>
+        <text x="676" y="160" text-anchor="end" font-size="11" font-weight="600" fill="var(--ink)">next word</text>
+        <text x="676" y="205" text-anchor="end" font-size="10" fill="var(--muted)">prediction</text>
+        <text x="566" y="176" text-anchor="middle" font-size="12" fill="var(--muted)">⋯ &#215;12 layers ⋯</text>
+
+        <!-- attention (above the stream) -->
+        <rect x="206" y="52" width="152" height="54" rx="6" fill="var(--panel2)" stroke="var(--line)"/>
+        <text x="282" y="76" text-anchor="middle" font-size="12" font-weight="600" fill="var(--ink)">ATTENTION</text>
+        <text x="282" y="93" text-anchor="middle" font-size="10" fill="var(--muted)">gather from earlier words</text>
+        <path d="M128,180 C128,120 166,79 206,79" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#ahI)"/>
+        <text x="70" y="46" text-anchor="start" font-size="10" fill="var(--muted)">looks back at other words</text>
+        <line x1="250" y1="177" x2="250" y2="108" stroke="currentColor" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#ahI)"/>
+        <text x="242" y="150" text-anchor="end" font-size="10" fill="var(--muted)">read</text>
+        <line x1="300" y1="106" x2="300" y2="173" stroke="currentColor" stroke-width="1.6" marker-end="url(#ahI)"/>
+        <text x="311" y="150" text-anchor="start" font-size="10" fill="var(--muted)">add</text>
+
+        <!-- MLP (below the stream) -->
+        <rect x="338" y="252" width="152" height="54" rx="6" fill="var(--panel2)" stroke="var(--mlp)"/>
+        <text x="414" y="276" text-anchor="middle" font-size="12" font-weight="600" fill="var(--mlp)">MLP</text>
+        <text x="414" y="293" text-anchor="middle" font-size="10" fill="var(--muted)">recall associations</text>
+        <line x1="372" y1="183" x2="372" y2="250" stroke="currentColor" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#ahI)"/>
+        <text x="364" y="224" text-anchor="end" font-size="10" fill="var(--muted)">read</text>
+        <line x1="422" y1="252" x2="422" y2="187" stroke="var(--mlp-fill)" stroke-width="1.6" marker-end="url(#ahM)"/>
+        <text x="433" y="224" text-anchor="start" font-size="10" fill="var(--muted)">add</text>
+
+        <!-- the two additive junctions on the stream -->
+        <circle cx="300" cy="180" r="8.5" fill="var(--panel)" stroke="var(--resid-fill)" stroke-width="2"/>
+        <text x="300" y="184.5" text-anchor="middle" font-size="12" font-weight="700" fill="var(--ink)">+</text>
+        <circle cx="422" cy="180" r="8.5" fill="var(--panel)" stroke="var(--mlp-fill)" stroke-width="2"/>
+        <text x="422" y="184.5" text-anchor="middle" font-size="12" font-weight="700" fill="var(--ink)">+</text>
+
+        <!-- one-layer bracket -->
+        <path d="M198,322 L198,330 L498,330 L498,322" fill="none" stroke="var(--muted)" stroke-width="1" stroke-dasharray="4 3"/>
+        <text x="348" y="347" text-anchor="middle" font-size="11" fill="var(--ink2)">one layer — repeats &#215;12, same fixed weights each time</text>
+      </svg>
+      <figcaption>Each layer reads the stream and adds two edits back to it, never erasing. Attention is the only step that moves information <em>between</em> words; the MLP works on one position at a time. The same fixed layer runs again for every token generated.</figcaption>
+    </figure>
+    <div class="exp-keys">
+      <div class="exp-key"><b><span class="sw" style="background:var(--resid-fill)"></span>Residual stream</b> — the running notepad. Enters as the word, leaves as the prediction. It is the amber column in the viewer below.</div>
+      <div class="exp-key"><b>Attention</b> — reaches back to earlier words and pulls in what is relevant: "this position should look at <em>France</em>."</div>
+      <div class="exp-key"><b><span class="sw" style="background:var(--mlp-fill)"></span>MLP write</b> — recalls associations for the current position. Layer 9's MLP voting capital cities is this step. The teal column below.</div>
+    </div>
+  </section>
 
   <section class="live">
     <label class="lbl" for="prompt">Type a prompt — GPT-2 runs live in your browser</label>
