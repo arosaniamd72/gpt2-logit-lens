@@ -1,0 +1,4 @@
+# Static deploy: serve the viewer in docs/ as the site root.
+[build]
+  publish = "docs"
+  command = ""
