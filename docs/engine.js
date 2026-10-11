@@ -166,7 +166,7 @@
       for (let d = 0; d < ne; d++) row[d] = e[d] + pe[d];
       x.push(row);
     }
-    const residLast = [], mlpLast = [];
+    const residLast = [], attnLast = [], mlpLast = [];
     for (let L = 0; L < cfg.n_layer; L++) {
       const pf = "transformer.h." + L + ".";
       const ln1w = T[pf + "ln_1.weight"], ln1b = T[pf + "ln_1.bias"];
@@ -206,9 +206,10 @@
       }
       for (let p = 0; p < S; p++) { const r = x[p]; const m = mlpOut[p]; for (let d = 0; d < ne; d++) r[d] += m[d]; }
       residLast.push(x[S - 1].slice());
+      attnLast.push(attnOut[S - 1]);
       mlpLast.push(mlpOut[S - 1]);
     }
-    return { residLast, mlpLast };
+    return { residLast, attnLast, mlpLast };
   };
 
   // Project a d_model vector through ln_f + unembed -> full softmax probs.
@@ -253,18 +254,20 @@
     const nl = model.cfg.n_layer;
     const rec = { prompt, steps: [] };
     for (let step = 0; step < newTokens; step++) {
-      const { residLast, mlpLast } = model.forwardLast(ids);
+      const { residLast, attnLast, mlpLast } = model.forwardLast(ids);
       const final = model.lens(residLast[nl - 1]); // == model output distribution
       const cid = argmax(final);
       const layers = [];
       for (let L = 0; L < nl; L++) {
         const rp = model.lens(residLast[L]);
+        const ap = model.lens(attnLast[L]);
         const mp = model.lens(mlpLast[L]);
         layers.push({
           resid: topk(rp, k, (i) => tok.decodeOne(i)),
+          attn: topk(ap, k, (i) => tok.decodeOne(i)),
           mlp: topk(mp, k, (i) => tok.decodeOne(i)),
           p_chosen: Math.round(rp[cid] * 1e5) / 1e5,
-          resid_H: entropy(rp), mlp_H: entropy(mp),
+          resid_H: entropy(rp), attn_H: entropy(ap), mlp_H: entropy(mp),
         });
         if (cb.onLayer) cb.onLayer(step, L, nl);
       }
