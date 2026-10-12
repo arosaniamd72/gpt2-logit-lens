@@ -173,6 +173,16 @@ svg{display:block;width:100%;height:auto;overflow:visible}
 .prog-bar{width:160px;height:6px;background:var(--line2);border-radius:3px;overflow:hidden}
 .prog-bar i{display:block;height:100%;width:0;background:var(--resid-fill);transition:width .25s}
 #progTxt{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+/* ---- ask Claude ---- */
+.ask{margin-top:22px}
+.ask-sugg{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.ask-sugg button{font-size:12px;padding:5px 10px;font-weight:400;color:var(--ink2)}
+.ask-ans{margin-top:14px;padding:12px 14px;border-left:3px solid var(--attn-fill);background:var(--panel2);font-size:14px;line-height:1.6;color:var(--ink)}
+.ask-ans p{margin:0 0 9px}.ask-ans p:last-child{margin:0}
+.ask-ans ul{margin:0 0 9px;padding-left:20px}
+.ask-ans code{font-family:"IBM Plex Mono",monospace;font-size:12.5px;background:var(--panel);padding:0 3px;border-radius:2px}
+.ask-q{font-size:12px;color:var(--muted);margin-bottom:6px}
+.ask-err{color:var(--resid)}
 details{margin-top:22px;background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:0}
 summary{cursor:pointer;padding:13px 16px;font-size:13px;font-weight:500}
 details[open] summary{border-bottom:1px solid var(--line)}
@@ -327,10 +337,26 @@ footer{margin-top:34px;padding-top:16px;border-top:1px solid var(--line);
     </div>
   </div>
 
+  <section class="live ask" id="ask">
+    <label class="lbl" for="q">Ask Claude about what you're seeing</label>
+    <div class="live-row">
+      <input id="q" type="text" maxlength="600" autocomplete="off" placeholder="e.g. Why does the prediction only settle in the last few layers?">
+      <button class="pri" id="askBtn">Ask</button>
+    </div>
+    <div class="ask-sugg" id="askSugg">
+      <button type="button">Why does the answer only appear in the late layers?</button>
+      <button type="button">What is the MLP write doing at this layer?</button>
+      <button type="button">What does the entropy chart tell me here?</button>
+      <button type="button">Can I trust the logit lens for early layers?</button>
+    </div>
+    <div class="ask-ans" id="askAns" hidden></div>
+    <div class="live-foot"><span class="live-note">Answers come from Claude (Anthropic) and use the prompt and layer readings on screen. Questions about LLMs and this model only — not for clinical advice, and please don't enter patient information.</span></div>
+  </section>
+
   <details>
     <summary>How this works</summary>
     <div class="dbody">
-      <p class="note" style="margin:0 0 10px">When you press <b>Run</b>, GPT-2 small (124M parameters, fp16) downloads once and then runs entirely on your device in a background thread. Each layer's vector is projected through the model's own final <code>LayerNorm</code> and unembedding to read out what it "predicts", with no server round-trip.</p>
+      <p class="note" style="margin:0 0 10px">When you press <b>Run</b>, GPT-2 small (124M parameters) runs on a small server and sends back every layer’s readings; if the server can’t be reached, the model (fp16) downloads once and runs entirely on your device in a background thread instead. Each layer's vector is projected through the model's own final <code>LayerNorm</code> and unembedding to read out what it "predicts", with no server round-trip.</p>
       <p class="note" style="margin:0 0 10px">The per-layer <b>MLP write</b> column is why this is a from-scratch forward pass rather than an off-the-shelf runtime: no packaged GPT-2 exposes each layer's MLP output on its own. The output is verified token-for-token against a PyTorch reference before shipping.</p>
       <p class="note" style="margin:0">Compute for five tokens takes a few seconds on a laptop. Layer 11's residual read-out equals the model's actual output, which is the built-in check that the projection is correct.</p>
     </div>
@@ -578,6 +604,64 @@ function runLive(){
     serverDown=true; runInBrowser(prompt);
   });
 }
+/* ---------- ask Claude about the current view ---------- */
+function fmtTop(a){ return (a||[]).slice(0,3).map(function(x){ return JSON.stringify(x[0])+" "+(x[1]*100).toFixed(1)+"%"; }).join(", "); }
+function screenContext(){
+  var P=DATA.prompts[S.p]; if(!P||!P.steps||!P.steps[S.s]) return "";
+  var st=P.steps[S.s], out=[];
+  out.push('Prompt: '+JSON.stringify(P.prompt));
+  if(P.generated) out.push('Full generated text: '+JSON.stringify(P.generated));
+  out.push('Viewing generation step '+(S.s+1)+' of '+P.steps.length+'. Context at this step: '+JSON.stringify(st.context)+'. Token emitted: '+JSON.stringify(st.chosen));
+  out.push('Layer the reader has selected: '+S.L+' (layers 0-'+(nL()-1)+')');
+  out.push('Model output (top 3): '+fmtTop(st.final));
+  out.push('Per layer, top-3 logit-lens readings (residual stream | attention write | MLP write), p(emitted token) from the residual stream, and entropies in nats:');
+  st.layers.forEach(function(l,i){
+    out.push('L'+i+': resid '+fmtTop(l.resid)+' | attn '+fmtTop(l.attn)+' | mlp '+fmtTop(l.mlp)+' | p(emitted)='+l.p_chosen+' | H resid/attn/mlp='+l.resid_H+'/'+l.attn_H+'/'+l.mlp_H);
+  });
+  return out.join("\n");
+}
+function esc(t){ return t.replace(/[&<>"]/g,function(c){ return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]; }); }
+function inlineMd(t){ return esc(t).replace(/\*\*([^*]+)\*\*/g,"<b>$1</b>").replace(/`([^`]+)`/g,"<code>$1</code>"); }
+function renderAnswer(text){
+  var html=[], list=null;
+  text.split(/\n/).forEach(function(line){
+    var m=line.match(/^\s*(?:[-*•]|\d+[.)])\s+(.*)$/);
+    if(m){ if(!list){ list=[]; } list.push("<li>"+inlineMd(m[1])+"</li>"); return; }
+    if(list){ html.push("<ul>"+list.join("")+"</ul>"); list=null; }
+    if(line.trim()) html.push("<p>"+inlineMd(line.trim())+"</p>");
+  });
+  if(list) html.push("<ul>"+list.join("")+"</ul>");
+  return html.join("");
+}
+var asking=false;
+function showAsk(q, html){ var a=$("askAns"); a.hidden=false; a.innerHTML='<div class="ask-q">'+esc(q)+'</div>'+html; }
+function askClaude(){
+  if(asking) return;
+  var q=$("q").value.trim(); if(!q) return;
+  asking=true; $("askBtn").disabled=true; $("askBtn").textContent="Asking…";
+  showAsk(q,'<p class="live-note">Claude is reading the layers…</p>');
+  var t0=Date.now();
+  function done(){ asking=false; $("askBtn").disabled=false; $("askBtn").textContent="Ask"; }
+  function attempt(){
+    return ping(10000).then(function(){
+      return fetch(API+"/ask",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({question:q, context:screenContext()})})
+        .then(function(r){ return r.json().then(function(j){ if(!r.ok) throw new Error(j.detail||("error "+r.status)); return j; },
+                                                 function(){ throw new Error("error "+r.status); }); });
+    }, function(){
+      if(Date.now()-t0>90000) throw new Error("The question server couldn't be reached. Please try again in a minute.");
+      showAsk(q,'<p class="live-note">Waking the server (can take up to a minute)…</p>');
+      return new Promise(function(res){ setTimeout(res,3000); }).then(attempt);
+    });
+  }
+  attempt().then(function(j){ showAsk(q, renderAnswer(j.answer||"")); done(); },
+                 function(e){ showAsk(q,'<p class="ask-err">'+esc(String(e&&e.message||e))+'</p>'); done(); });
+}
+$("askBtn").addEventListener("click", askClaude);
+$("q").addEventListener("keydown", function(e){ if(e.key==="Enter"){ e.preventDefault(); askClaude(); } });
+[].forEach.call($("askSugg").querySelectorAll("button"), function(b){
+  b.addEventListener("click", function(){ $("q").value=b.textContent; askClaude(); });
+});
 $("run").addEventListener("click", runLive);
 $("prompt").addEventListener("keydown", function(e){ if(e.key==="Enter"){ e.preventDefault(); runLive(); } });
 

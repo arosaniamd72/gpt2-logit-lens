@@ -3,3 +3,4 @@ torch==2.5.1+cpu
 transformers==4.46.3
 fastapi==0.115.0
 uvicorn==0.30.6
+anthropic==1.13.0

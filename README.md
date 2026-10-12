@@ -19,6 +19,15 @@ layer-by-layer trace. If the server can't be reached, it falls back to running G
 browser (`docs/engine.js` + `docs/worker.js`, one-time ~248 MB download). Both produce the
 same JSON shape.
 
+## Ask Claude
+
+Below the viewer, readers can ask questions about LLMs and what the viewer shows. The page
+sends the question plus the on-screen layer readings to the server's `/ask` endpoint, which
+calls Claude through the Anthropic API (key in the Space secret `ANTHROPIC_API_KEY`; model
+set by `CLAUDE_MODEL`, default `claude-sonnet-5-5`). Off-topic questions are declined.
+Limits: 8 questions per visitor per 10 minutes and 150 per day (`ASK_PER_IP_PER_10MIN`,
+`ASK_PER_DAY` Space variables).
+
 Pushing changes under `server/` redeploys the Space (`.github/workflows/hf-space.yml`).
 The viewer itself is published at https://tools.clinicallinks.net/logit-lens/ by the
 `arosaniamd72/clinical-tools` repository.
