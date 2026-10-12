@@ -523,7 +523,7 @@ function showResult(data){
 }
 function ping(ms){
   var c=new AbortController(), t=setTimeout(function(){ c.abort(); }, ms);
-  return fetch(API+"/health",{signal:c.signal,cache:"no-store"})
+  return fetch(API+"/",{signal:c.signal,cache:"no-store"})
     .then(function(r){ clearTimeout(t); if(!r.ok) throw 0; return r.json(); })
     .then(function(j){ if(!j||!j.ok) throw 0; return true; });
 }
