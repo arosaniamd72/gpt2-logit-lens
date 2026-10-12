@@ -258,13 +258,13 @@ footer{margin-top:34px;padding-top:16px;border-top:1px solid var(--line);
   </section>
 
   <section class="live">
-    <label class="lbl" for="prompt">Type a prompt — GPT-2 runs live in your browser</label>
+    <label class="lbl" for="prompt">Type a prompt — real GPT-2 runs live</label>
     <div class="live-row">
       <input id="prompt" type="text" value="The capital of Japan is" spellcheck="false" autocomplete="off">
       <button class="pri" id="run">Run</button>
     </div>
     <div class="live-foot">
-      <span class="live-note">Real GPT-2 small, computed on your device · one-time ~248&nbsp;MB download, then cached</span>
+      <span class="live-note" id="liveNote">Real GPT-2 small, computed on a GPT-2 server · if it can’t be reached, runs on your device instead (one-time ~248&nbsp;MB download)</span>
       <div class="prog" id="prog" hidden><span class="prog-bar"><i id="progFill"></i></span><span id="progTxt"></span></div>
     </div>
   </section>
@@ -509,36 +509,74 @@ $("rows").addEventListener("click", function(e){
 });
 $("play").addEventListener("click", play);
 $("speed").addEventListener("change", function(e){ S.speed = +e.target.value; });
-/* ---------- live mode: run GPT-2 in a worker ---------- */
-var worker=null, busy=false;
+/* ---------- live mode: GPT-2 server first, in-browser worker as fallback ---------- */
+var API=(new URLSearchParams(location.search).get("api"))||"https://gpt2.clinicallinks.net";
+var worker=null, busy=false, serverDown=false;
 function setProg(pct,txt){ $("prog").hidden=false; $("progFill").style.width=(Math.max(0,Math.min(1,pct))*100).toFixed(1)+"%"; $("progTxt").textContent=txt; }
-function runLive(){
-  if(busy) return;
-  var prompt=$("prompt").value.trim(); if(!prompt) return;
-  busy=true; stop(); $("run").disabled=true; $("run").textContent="Running…"; setProg(0,"starting");
+function idle(){ busy=false; $("run").disabled=false; $("run").textContent="Run"; }
+function showResult(data){
+  DATA.prompts.push(data.prompts[0]);
+  S.p=DATA.prompts.length-1; S.s=0; S.L=nL()-1;
+  buildChips(); buildSteps(); render();
+  idle(); $("prog").hidden=true;
+  play();                       // auto slow-mo replay of the fresh result
+}
+function ping(ms){
+  var c=new AbortController(), t=setTimeout(function(){ c.abort(); }, ms);
+  return fetch(API+"/health",{signal:c.signal,cache:"no-store"})
+    .then(function(r){ clearTimeout(t); if(!r.ok) throw 0; return r.json(); })
+    .then(function(j){ if(!j||!j.ok) throw 0; return true; });
+}
+ping(10000).catch(function(){});   // nudge a sleeping server awake while the reader looks around
+function runOnServer(prompt){
+  var wait = serverDown ? 6000 : 90000, t0=Date.now();
+  function attempt(){
+    return ping(10000).then(function(){
+      setProg(0.6,"computing on the GPT-2 server");
+      return fetch(API+"/lens",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({prompt:prompt,new_tokens:5,topk:DATA.topk||8})})
+        .then(function(r){
+          if(r.ok) return r.json();
+          return r.json().then(function(j){ throw new Error(j.detail||("server error "+r.status)); },
+                               function(){ throw new Error("server error "+r.status); });
+        });
+    }, function(){
+      var gone=Date.now()-t0;
+      if(gone>wait) throw "unreachable";
+      setProg(0.05+0.5*gone/wait,"waking the GPT-2 server (can take up to a minute)…");
+      return new Promise(function(res){ setTimeout(res,3000); }).then(attempt);
+    });
+  }
+  return attempt();
+}
+function runInBrowser(prompt){
   if(!worker){
     worker=new Worker("worker.js");
     worker.onmessage=function(e){
       var m=e.data;
       if(m.type==="progress"){
         var pc=Math.round(m.pct*100);
-        var label = m.phase==="download" ? "downloading model "+pc+"%"
+        var label = m.phase==="download" ? "server unavailable — downloading model to this device "+pc+"%"
                   : m.phase==="init"     ? "preparing weights"
-                  :                        "computing "+pc+"%";
+                  :                        "computing on this device "+pc+"%";
         setProg(m.pct,label);
       } else if(m.type==="done"){
-        DATA.prompts.push(m.data.prompts[0]);
-        S.p=DATA.prompts.length-1; S.s=0; S.L=nL()-1;
-        buildChips(); buildSteps(); render();
-        busy=false; $("run").disabled=false; $("run").textContent="Run"; $("prog").hidden=true;
-        play();                       // auto slow-mo replay of the fresh result
+        showResult(m.data);
       } else if(m.type==="error"){
-        busy=false; $("run").disabled=false; $("run").textContent="Run";
-        setProg(0,"error — "+m.message);
+        idle(); setProg(0,"error — "+m.message);
       }
     };
   }
   worker.postMessage({type:"gen", prompt:prompt, newTokens:5, topk: DATA.topk||8});
+}
+function runLive(){
+  if(busy) return;
+  var prompt=$("prompt").value.trim(); if(!prompt) return;
+  busy=true; stop(); $("run").disabled=true; $("run").textContent="Running…"; setProg(0.05,"contacting the GPT-2 server");
+  runOnServer(prompt).then(function(data){ serverDown=false; showResult(data); }, function(err){
+    if(err instanceof Error && /^(prompt|server error 4)/.test(err.message)){ idle(); setProg(0,"error — "+err.message); return; }
+    serverDown=true; runInBrowser(prompt);
+  });
 }
 $("run").addEventListener("click", runLive);
 $("prompt").addEventListener("keydown", function(e){ if(e.key==="Enter"){ e.preventDefault(); runLive(); } });

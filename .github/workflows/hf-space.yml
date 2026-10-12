@@ -1,0 +1,34 @@
+# Publishes server/ to the Hugging Face Space arosaniamd/gpt2-lens (created on first run).
+# Needs the HF_TOKEN repository secret (a Hugging Face token with write access).
+name: Deploy GPT-2 server to Hugging Face
+
+on:
+  push:
+    branches: [main]
+    paths: ["server/**", ".github/workflows/hf-space.yml"]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Push server/ to the Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          if [ -z "$HF_TOKEN" ]; then
+            echo "::notice::HF_TOKEN secret not set; skipping."
+            exit 0
+          fi
+          pip install -q huggingface_hub
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi
+          api = HfApi()
+          repo = "arosaniamd/gpt2-lens"
+          api.create_repo(repo, repo_type="space", space_sdk="docker", exist_ok=True, private=False)
+          api.upload_folder(folder_path="server", repo_id=repo, repo_type="space",
+                            commit_message="Deploy from GitHub " + os.environ.get("GITHUB_SHA", "")[:7])
+          print("pushed to https://huggingface.co/spaces/" + repo)
+          PY

@@ -13,11 +13,15 @@ server, no model download, works offline.
 
 ## Play your own prompt
 
-GPT-2 doesn't run in the browser here. Generate a trace with the exporter from
-the companion tooling, then paste the JSON into the page's
-**Play your own prompt** box:
+Type a prompt and press **Run**. The page asks the GPT-2 server (`server/`, hosted as the
+Hugging Face Space `arosaniamd/gpt2-lens` at https://gpt2.clinicallinks.net) for the
+layer-by-layer trace. If the server can't be reached, it falls back to running GPT-2 in the
+browser (`docs/engine.js` + `docs/worker.js`, one-time ~248 MB download). Both produce the
+same JSON shape.
 
-    python export_lens_json.py --out lens.json --prompts "your prompt here"
+Pushing changes under `server/` redeploys the Space (`.github/workflows/hf-space.yml`).
+The viewer itself is published at https://tools.clinicallinks.net/logit-lens/ by the
+`arosaniamd72/clinical-tools` repository.
 
 ## How it's projected
 
