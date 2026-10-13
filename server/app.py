@@ -187,11 +187,16 @@ def ask(req: AskRequest, request: Request):
     content = ("On-screen data from the viewer:\n" + ctx + "\n\n" if ctx else "") + "Question: " + q
     try:
         msg = claude().messages.create(
-            model=CLAUDE_MODEL, max_tokens=800, system=SYSTEM,
+            model=CLAUDE_MODEL, max_tokens=3000, system=SYSTEM,
             messages=[{"role": "user", "content": content}],
         )
     except Exception as e:  # don't leak details; log for the owner
         print("ask failed:", repr(e), flush=True)
         raise HTTPException(502, "Claude couldn't be reached just now. Please try again.")
     text = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text").strip()
-    return {"answer": text, "model": CLAUDE_MODEL}
+    if msg.stop_reason == "max_tokens":
+        text += " …"
+    u = msg.usage
+    print("ask ok: in=%s out=%s stop=%s" % (u.input_tokens, u.output_tokens, msg.stop_reason), flush=True)
+    return {"answer": text, "model": CLAUDE_MODEL,
+            "usage": {"input_tokens": u.input_tokens, "output_tokens": u.output_tokens, "stop": msg.stop_reason}}
