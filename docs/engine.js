@@ -1,9 +1,10 @@
 /* GPT-2 small, from scratch, for the logit lens.
  *
  * Runs a real forward pass in the browser (or Node, for testing) so that the
- * viewer can show, per layer, both the residual stream's running prediction
- * and that layer's MLP contribution. No off-the-shelf runtime exposes the
- * per-layer MLP write, which is why this is hand-written.
+ * viewer can show, per write, how the residual stream's running prediction
+ * moved, the stream's size, and the vote/shrink ledger. No off-the-shelf
+ * runtime exposes every attention and MLP write, which is why this is
+ * hand-written. Output matches the GPT-2 server's /lens (server/app.py).
  *
  * Weights are fp16 (2D) and fp32 (1D), decoded to fp32 Float32Arrays on load.
  * fp16 matches full precision to ~1e-3, which int8 did not: int8 survived
@@ -153,7 +154,8 @@
   }
 
   // Full forward over a token sequence. Returns, for the LAST position only,
-  // the residual stream after each block and each block's MLP output.
+  // the embedding, the residual stream after each block, and each block's
+  // attention and MLP writes.
   Model.prototype.forwardLast = function (ids) {
     const T = this.T, cfg = this.cfg, ne = cfg.n_embd, nh = cfg.n_head, hd = ne / nh, eps = cfg.ln_eps;
     const S = ids.length;
@@ -166,6 +168,7 @@
       for (let d = 0; d < ne; d++) row[d] = e[d] + pe[d];
       x.push(row);
     }
+    const embLast = x[S - 1].slice();
     const residLast = [], attnLast = [], mlpLast = [];
     for (let L = 0; L < cfg.n_layer; L++) {
       const pf = "transformer.h." + L + ".";
@@ -209,7 +212,7 @@
       attnLast.push(attnOut[S - 1]);
       mlpLast.push(mlpOut[S - 1]);
     }
-    return { residLast, attnLast, mlpLast };
+    return { embLast, residLast, attnLast, mlpLast };
   };
 
   // Project a d_model vector through ln_f + unembed -> full softmax probs.
@@ -231,12 +234,62 @@
     return logits;
   };
 
+  // Average unembedding row: scores are relative to the average vocabulary token.
+  Model.prototype.vocabMean = function () {
+    if (this._mu) return this._mu;
+    const W = this.T["transformer.wte.weight"], sh = this.shape["transformer.wte.weight"];
+    const rows = sh[0], cols = sh[1], mu = new Float64Array(cols);
+    for (let v = 0; v < rows; v++) { const base = v * cols; for (let d = 0; d < cols; d++) mu[d] += W[base + d]; }
+    for (let d = 0; d < cols; d++) mu[d] /= rows;
+    return (this._mu = mu);
+  };
+
+  // Token j's ledger: the final LayerNorm's fixed prior, the lens content of the
+  // stream after each write, and each write's vote, all measured at the stream's
+  // size after that write. content[k] = content[k-1]*sigma[k-1]/sigma[k] + vote[k].
+  Model.prototype.ledger = function (streams, comps, sigma, j) {
+    const T = this.T, g = T["transformer.ln_f.weight"], b = T["transformer.ln_f.bias"];
+    const W = T["transformer.wte.weight"], cols = this.shape["transformer.wte.weight"][1], mu = this.vocabMean();
+    const u = new Float64Array(cols); let prior = 0;
+    for (let d = 0; d < cols; d++) { const w = W[j * cols + d] - mu[d]; u[d] = g[d] * w; prior += b[d] * w; }
+    function proj(v, sg) {
+      let m = 0; for (let d = 0; d < cols; d++) m += v[d]; m /= cols;
+      let s = 0; for (let d = 0; d < cols; d++) s += (v[d] - m) * u[d];
+      return r3(s / sg);
+    }
+    return { content: streams.map((s, k) => proj(s, sigma[k])), vote: comps.map((c, k) => proj(c, sigma[k])), prior: r3(prior) };
+  };
+
+  function r3(x) { return Math.round(x * 1e3) / 1e3; }
+  function r5(x) { return Math.round(x * 1e5) / 1e5; }
+  function sizeOf(v, eps) {           // LayerNorm's divisor for this vector
+    const n = v.length;
+    let m = 0; for (let i = 0; i < n; i++) m += v[i]; m /= n;
+    let s = 0; for (let i = 0; i < n; i++) { const d = v[i] - m; s += d * d; }
+    return Math.sqrt(s / n + eps);
+  }
+  function topIdx(probs, k) {         // indices of the k largest, largest first
+    const idx = [], val = [];
+    for (let i = 0; i < probs.length; i++) {
+      const p = probs[i];
+      if (idx.length === k && p <= val[k - 1]) continue;
+      let at = idx.length === k ? k - 1 : idx.length;
+      while (at > 0 && val[at - 1] < p) at--;
+      idx.splice(at, 0, i); val.splice(at, 0, p);
+      if (idx.length > k) { idx.pop(); val.pop(); }
+    }
+    return idx;
+  }
+  function rankOf(probs, j) { let r = 1; const p = probs[j]; for (let i = 0; i < probs.length; i++) if (probs[i] > p) r++; return r; }
   function topk(probs, k, decodeOne) {
-    const idx = Array.from({ length: probs.length }, (_, i) => i);
-    idx.sort((a, b) => probs[b] - probs[a]);
-    const out = [];
-    for (let i = 0; i < k; i++) out.push([decodeOne(idx[i]), Math.round(probs[idx[i]] * 1e5) / 1e5]);
-    return out;
+    return topIdx(probs, k).map((i) => [decodeOne(i), r5(probs[i])]);
+  }
+  // The tokens whose probability a write moved most: [tok, p_before, p_after, rank_before, rank_after].
+  function movers(pb, pa, decodeOne, k, pool) {
+    k = k || 4; pool = pool || 10;
+    const ids = Array.from(new Set(topIdx(pb, pool).concat(topIdx(pa, pool))));
+    ids.sort((a, b) => Math.abs(pa[b] - pb[b]) - Math.abs(pa[a] - pb[a]));
+    return ids.slice(0, k).map((j) => [decodeOne(j), r5(pb[j]), r5(pa[j]), rankOf(pb, j), rankOf(pa, j)]);
   }
   function entropy(probs) {
     let h = 0;
@@ -253,27 +306,42 @@
     if (ids.length === 0) ids = [tok.encode(" ")[0] || 220];
     const nl = model.cfg.n_layer;
     const rec = { prompt, steps: [] };
+    const dec = (i) => tok.decodeOne(i);
     for (let step = 0; step < newTokens; step++) {
-      const { residLast, attnLast, mlpLast } = model.forwardLast(ids);
+      const { embLast, residLast, attnLast, mlpLast } = model.forwardLast(ids);
+      // the stream after every write (embedding, then attention and MLP of each layer)
+      const streams = [embLast], comps = [embLast], mids = [];
+      let prev = embLast;
+      for (let L = 0; L < nl; L++) {
+        const mid = new Float32Array(prev.length);
+        for (let d = 0; d < mid.length; d++) mid[d] = prev[d] + attnLast[L][d];
+        mids.push(mid); streams.push(mid, residLast[L]); comps.push(attnLast[L], mlpLast[L]);
+        prev = residLast[L];
+      }
+      const sigma = streams.map((s) => sizeOf(s, model.cfg.ln_eps));
       const final = model.lens(residLast[nl - 1]); // == model output distribution
       const cid = argmax(final);
       const layers = [];
+      let pPrev = model.lens(embLast);
       for (let L = 0; L < nl; L++) {
-        const rp = model.lens(residLast[L]);
-        const ap = model.lens(attnLast[L]);
-        const mp = model.lens(mlpLast[L]);
+        const pm = model.lens(mids[L]);
+        const rp = L === nl - 1 ? final : model.lens(residLast[L]);
         layers.push({
-          resid: topk(rp, k, (i) => tok.decodeOne(i)),
-          attn: topk(ap, k, (i) => tok.decodeOne(i)),
-          mlp: topk(mp, k, (i) => tok.decodeOne(i)),
-          p_chosen: Math.round(rp[cid] * 1e5) / 1e5,
-          resid_H: entropy(rp), attn_H: entropy(ap), mlp_H: entropy(mp),
+          resid: topk(rp, k, dec),
+          p_chosen: r5(rp[cid]),
+          resid_H: entropy(rp), mid_H: entropy(pm),
+          attn_mv: movers(pPrev, pm, dec), mlp_mv: movers(pm, rp, dec),
         });
+        pPrev = rp;
         if (cb.onLayer) cb.onLayer(step, L, nl);
       }
+      const targets = topIdx(final, 5).map((j) => {
+        const lg = model.ledger(streams, comps, sigma, j);
+        return { tok: dec(j), id: j, p: r5(final[j]), rank: rankOf(final, j), content: lg.content, vote: lg.vote, prior: lg.prior };
+      });
       rec.steps.push({
-        context: tok.decode(ids), chosen: tok.decodeOne(cid), chosen_id: cid,
-        layers, final: topk(final, k, (i) => tok.decodeOne(i)),
+        context: tok.decode(ids), chosen: dec(cid), chosen_id: cid,
+        layers, final: topk(final, k, dec), sigma: sigma.map(r3), targets,
       });
       ids = ids.concat([cid]);
       if (cb.onStep) cb.onStep(step, newTokens);

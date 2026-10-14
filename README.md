@@ -3,13 +3,22 @@
 An interactive, slow-motion view of a GPT-2 prediction forming layer by layer.
 
 Pick a prompt and press **Replay in slow motion**. A scan descends the 12-layer
-stack, revealing at each layer what the residual stream currently predicts and
-what that layer's MLP contributed on its own. Two side charts track how much the
-model backs the token it eventually emits, and how committed it is (entropy),
-layer by layer.
+stack. Each layer makes two writes to the residual stream, attention then MLP,
+and the page shows them two ways:
 
-Everything runs from real GPT-2 small activations baked into the page — no
-server, no model download, works offline.
+- **Ledger.** Pick a token (and optionally a rival). Its score starts at the
+  *prior*, the final LayerNorm's bias read through the unembedding, which leans
+  toward frequent tokens and is the same for every prompt. Each write then adds
+  a *vote*, and a *shrink*: the final LayerNorm divides the stream by its size,
+  so a write that enlarges the stream turns down every earlier vote and pulls
+  the score back toward the prior. Both are exact; the running total equals the
+  logit-lens reading after every write, and the last row is the real output.
+- **Before → after.** For each write, the lens reading of the stream just
+  before and just after it (the tokens that moved most) and how much the write
+  multiplied the stream's size, then the stream's reading after the layer.
+
+Side charts track p(emitted token), the stream's size (σ) and entropy, layer by
+layer. Six precomputed examples are baked into the page and work offline.
 
 ## Play your own prompt
 
@@ -38,3 +47,10 @@ Each layer's vector is passed through the model's own final `LayerNorm` and
 unembedding matrix, turning a mid-stack state into a distribution over the
 vocabulary. Layer 11's residual equals the model's real output, which is the
 built-in check that the projection is done correctly.
+
+For the ledger, token *j*'s score (its logit minus the vocabulary-average logit)
+is `content + prior`, with `content = (x − mean)/σ · γ(W_U[j] − mean W_U)` and
+`prior = β · (W_U[j] − mean W_U)`. When a write *c* lands,
+`content_after = content_before · σ_before/σ_after + vote`, where
+`vote = (c − mean)/σ_after · γ(W_U[j] − mean W_U)`. The change in the first
+term is the shrink.
