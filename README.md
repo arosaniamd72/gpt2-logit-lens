@@ -20,6 +20,18 @@ and the page shows them two ways:
 Side charts track p(emitted token), the stream's size (σ) and entropy, layer by
 layer. Six precomputed examples are baked into the page and work offline.
 
+## Guided tour
+
+Press **Start the guided tour** (or open the page with `?tour=1`) for a narrated,
+step-by-step walk through one prediction. A card beside the viewer explains each
+stage, from tokens to the embedding to the lens and the ledger's prior. It then
+covers layer 0's attention and MLP writes in detail, every layer after that, and
+the output. The viewer moves to each stage and highlights the rows it is talking
+about. Every number in the narration comes from the prompt on screen, so the tour
+also works on prompts you run yourself. Keys: ← → to move, Esc to leave. **Auto**
+advances on its own, and clicking a ledger row jumps to that layer. The last stop
+offers a tour of the next token.
+
 ## Play your own prompt
 
 Type a prompt and press **Run**. The page asks the GPT-2 server (`server/`, hosted as the
